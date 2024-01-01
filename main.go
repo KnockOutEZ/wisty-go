@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/cheggaaa/pb/v3"
 	"github.com/urfave/cli"
@@ -79,7 +80,7 @@ func parseResolution(metadata, resolution, filename string) error {
 }
 
 func fetchResolutions(id, resolution, filename string) error {
-	fmt.Println("Connecting...\n")
+	fmt.Println("Connecting...")
 	url := "http://fast.wistia.net/embed/iframe/" + id
 	response, err := http.Get(url)
 	if err != nil {
@@ -133,13 +134,14 @@ func main() {
 	app.Usage = "Wistia video downloader command line tool"
 	app.Version = "1.0.0"
 
-	var id, resolution, name string
+	var resolution, name string
+	var id cli.StringSlice
 
 	app.Flags = []cli.Flag{
-		cli.StringFlag{
-			Name:        "id, i",
-			Usage:       "Wistia video id",
-			Destination: &id,
+		cli.StringSliceFlag{
+			Name:  "id, i",
+			Usage: "Wistia video id",
+			Value: &id,
 		},
 		cli.StringFlag{
 			Name:        "resolution, r",
@@ -149,18 +151,33 @@ func main() {
 		},
 		cli.StringFlag{
 			Name:        "name, n",
-			Value:       "video",
+			Value:       "",
 			Usage:       "Video name",
 			Destination: &name,
 		},
 	}
 
 	app.Action = func(c *cli.Context) error {
-		if id == "" {
+		if len(id) == 0 {
 			return cli.NewExitError("Missing required argument 'id'. Run 'wisty --help' for help.", 1)
 		}
 
-		return fetchResolutions(id, resolution, name)
+		idSlice := strings.Split(id.String(), ",")
+
+		for i, videoID := range idSlice {
+			var filename string
+			if name != "" {
+				filename = fmt.Sprintf("%s/%s%d", ".", name, i+1)
+			} else {
+				filename = fmt.Sprintf("%d", i+1)
+			}
+
+			if err := fetchResolutions(videoID, resolution, filename); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 
 	err := app.Run(os.Args)
