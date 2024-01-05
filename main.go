@@ -81,6 +81,7 @@ func parseResolution(metadata, resolution, filename string) error {
 
 func fetchResolutions(id, resolution, filename string) error {
 	fmt.Println("Connecting...")
+	fmt.Println("id: " + id)
 	url := "http://fast.wistia.net/embed/iframe/" + id
 	response, err := http.Get(url)
 	if err != nil {
