@@ -131,7 +131,7 @@ func fetchResolutions(id, resolution, filename string) error {
 
 func main() {
 	app := cli.NewApp()
-	app.Name = "wisty"
+	app.Name = "wisty-go"
 	app.Usage = "Wistia video downloader command line tool"
 	app.Version = "1.0.0"
 
