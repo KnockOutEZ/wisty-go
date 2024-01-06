@@ -160,7 +160,7 @@ func main() {
 
 	app.Action = func(c *cli.Context) error {
 		if len(id) == 0 {
-			return cli.NewExitError("Missing required argument 'id'. Run 'wisty --help' for help.", 1)
+			return cli.NewExitError("Missing required argument 'id'. Run 'wisty-go --help' for help.", 1)
 		}
 
 		idSlice := strings.Split(id.String(), ",")
