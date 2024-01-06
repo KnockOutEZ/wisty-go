@@ -14,7 +14,11 @@ Build the project
 ```bash
 go build
 ```
-Run the project
+Install the project
 ```bash
-./wisty-go --help
+go install
+```
+Run the project from anywhere now
+```bash
+wisty-go --help
 ```
