@@ -44,6 +44,58 @@ func downloadVideo(link, filename string) error {
 	return nil
 }
 
+func downloadFromJSON(jsonFile string) error {
+	fileContent, err := ioutil.ReadFile(jsonFile)
+	if err != nil {
+		return err
+	}
+
+	var jsonData map[string]interface{}
+	err = json.Unmarshal(fileContent, &jsonData)
+	if err != nil {
+		return err
+	}
+
+	name := jsonData["name"].(string)
+	itemCount := int(jsonData["item-count"].(float64))
+	items := jsonData["items"].([]interface{})
+
+	for i := 0; i < itemCount; i++ {
+		item := items[i].(map[string]interface{})
+		dynamicPart := item["dynamic-part"].(string)
+		downloaded := item["downloaded"].(bool)
+		moduleName := item["name"].(string)
+
+		if !downloaded {
+			// create a folder for the module
+			err := os.MkdirAll(name, 0755)
+			if err != nil {
+				return err
+			}
+			filename := fmt.Sprintf("./%s/%s", name, moduleName)
+			err = fetchResolutions(dynamicPart, "720p", filename)
+			if err != nil {
+				return err
+			}
+
+			// Toggle the 'downloaded' field to true
+			item["downloaded"] = true
+
+			// Update the JSON file
+			fileContent, err := json.MarshalIndent(jsonData, "", "  ")
+			if err != nil {
+				return err
+			}
+			err = ioutil.WriteFile(jsonFile, fileContent, 0644)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func parseResolution(metadata, resolution, filename string) error {
 	file, err := os.Open(metadata)
 	if err != nil {
@@ -83,6 +135,7 @@ func fetchResolutions(id, resolution, filename string) error {
 	fmt.Println("Connecting...")
 	fmt.Println("id: " + id)
 	url := "http://fast.wistia.net/embed/iframe/" + id
+	fmt.Println("URL:", url) 
 	response, err := http.Get(url)
 	if err != nil {
 		return err
@@ -137,6 +190,7 @@ func main() {
 
 	var resolution, name string
 	var id cli.StringSlice
+	var useJSONs bool
 
 	app.Flags = []cli.Flag{
 		cli.StringSliceFlag{
@@ -156,10 +210,29 @@ func main() {
 			Usage:       "Video name",
 			Destination: &name,
 		},
+		cli.BoolFlag{
+			Name:        "jsons",
+			Usage:       "Download videos based on JSON files in ./jsons folder",
+			Destination: &useJSONs,
+		},
 	}
 
 	app.Action = func(c *cli.Context) error {
-		if len(id) == 0 {
+		
+		if useJSONs {
+			jsonFiles, err := filepath.Glob("./jsons/*.json")
+			if err != nil {
+				return err
+			}
+
+			for _, jsonFile := range jsonFiles {
+				err := downloadFromJSON(jsonFile)
+				if err != nil {
+					return err
+				}
+			}
+		} else {
+			if len(id) == 0 {
 			return cli.NewExitError("Missing required argument 'id'. Run 'wisty-go --help' for help.", 1)
 		}
 
@@ -176,6 +249,7 @@ func main() {
 			if err := fetchResolutions(videoID, resolution, filename); err != nil {
 				return err
 			}
+		}
 		}
 
 		return nil
