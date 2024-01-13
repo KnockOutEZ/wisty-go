@@ -72,10 +72,15 @@ func downloadFromJSON(jsonFile string) error {
 			if err != nil {
 				return err
 			}
+			moduleName := strings.ReplaceAll(moduleName, "/", "_")
 			filename := fmt.Sprintf("./%s/%s", name, moduleName)
 			err = fetchResolutions(dynamicPart, "720p", filename)
 			if err != nil {
-				return err
+				fmt.Println("720p not found, trying 716p")
+				err = fetchResolutions(dynamicPart, "716p", filename)
+				if err != nil {
+					return err
+				}
 			}
 
 			// Toggle the 'downloaded' field to true
@@ -116,6 +121,7 @@ func parseResolution(metadata, resolution, filename string) error {
 		"540p":  540,
 		"480p":  480,
 		"360p":  360,
+		"716p":  716,
 	}
 
 	selectedResolution := resolutionMapping[resolution]
@@ -135,7 +141,7 @@ func fetchResolutions(id, resolution, filename string) error {
 	fmt.Println("Connecting...")
 	fmt.Println("id: " + id)
 	url := "http://fast.wistia.net/embed/iframe/" + id
-	fmt.Println("URL:", url) 
+	fmt.Println("URL:", url)
 	response, err := http.Get(url)
 	if err != nil {
 		return err
@@ -218,7 +224,7 @@ func main() {
 	}
 
 	app.Action = func(c *cli.Context) error {
-		
+
 		if useJSONs {
 			jsonFiles, err := filepath.Glob("./jsons/*.json")
 			if err != nil {
@@ -233,23 +239,23 @@ func main() {
 			}
 		} else {
 			if len(id) == 0 {
-			return cli.NewExitError("Missing required argument 'id'. Run 'wisty-go --help' for help.", 1)
-		}
-
-		idSlice := strings.Split(id.String(), ",")
-
-		for i, videoID := range idSlice {
-			var filename string
-			if name != "" {
-				filename = fmt.Sprintf("%s/%s%d", ".", name, i+1)
-			} else {
-				filename = fmt.Sprintf("%d", i+1)
+				return cli.NewExitError("Missing required argument 'id'. Run 'wisty-go --help' for help.", 1)
 			}
 
-			if err := fetchResolutions(videoID, resolution, filename); err != nil {
-				return err
+			idSlice := strings.Split(id.String(), ",")
+
+			for i, videoID := range idSlice {
+				var filename string
+				if name != "" {
+					filename = fmt.Sprintf("%s/%s%d", ".", name, i+1)
+				} else {
+					filename = fmt.Sprintf("%d", i+1)
+				}
+
+				if err := fetchResolutions(videoID, resolution, filename); err != nil {
+					return err
+				}
 			}
-		}
 		}
 
 		return nil
