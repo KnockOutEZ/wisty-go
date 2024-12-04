@@ -9,14 +9,30 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/cheggaaa/pb/v3"
 	"github.com/urfave/cli"
 )
 
+type VideoItem struct {
+	Index       int    `json:"index"`
+	DynamicPart string `json:"dynamic-part"`
+	Downloaded  bool   `json:"downloaded"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+}
+
+type CourseData struct {
+	Name      string      `json:"name"`
+	ItemCount int         `json:"item-count"`
+	Items     []VideoItem `json:"items"`
+}
+
 func downloadVideo(link, filename string) error {
-	fmt.Printf("%s\n", filename)
+	fmt.Printf("Downloading: %s\n", filename)
 	output, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -32,7 +48,6 @@ func downloadVideo(link, filename string) error {
 	bar := pb.Full.Start64(response.ContentLength)
 	defer bar.Finish()
 
-	// Wrap the response.Body with a proxy reader to update the progress bar
 	reader := bar.NewProxyReader(response.Body)
 
 	_, err = io.Copy(output, reader)
@@ -50,55 +65,119 @@ func downloadFromJSON(jsonFile string) error {
 		return err
 	}
 
-	var jsonData map[string]interface{}
-	err = json.Unmarshal(fileContent, &jsonData)
+	var courseData CourseData
+	err = json.Unmarshal(fileContent, &courseData)
 	if err != nil {
 		return err
 	}
 
-	name := jsonData["name"].(string)
-	itemCount := int(jsonData["item-count"].(float64))
-	items := jsonData["items"].([]interface{})
+	resolutions := []string{"1080p", "720p", "716p", "540p", "480p", "360p", "220p"}
+	var failedDownloads []string
 
-	for i := 0; i < itemCount; i++ {
-		item := items[i].(map[string]interface{})
-		dynamicPart := item["dynamic-part"].(string)
-		downloaded := item["downloaded"].(bool)
-		moduleName := item["name"].(string)
+	for i := range courseData.Items {
+		item := &courseData.Items[i]
+		
+		if item.Downloaded || item.Type != "video" {
+			continue
+		}
 
-		if !downloaded {
-			// create a folder for the module
-			err := os.MkdirAll(name, 0755)
-			if err != nil {
-				return err
+		coursePath := filepath.Join(".", courseData.Name)
+		if err := os.MkdirAll(coursePath, 0755); err != nil {
+			fmt.Printf("Error creating directory for %s: %v\nSkipping...\n", item.Name, err)
+			failedDownloads = append(failedDownloads, item.Name)
+			continue
+		}
+
+		cleanName := strings.ReplaceAll(item.Name, "/", "_")
+		filename := filepath.Join(coursePath, cleanName + ".mp4")
+
+		success := false
+		
+		availableResolutions, err := getAvailableResolutions(item.DynamicPart)
+		if err != nil {
+			fmt.Printf("Warning: Could not get available resolutions for %s: %v\nFalling back to default resolution list\n", item.Name, err)
+			availableResolutions = resolutions
+		}
+
+		for _, res := range availableResolutions {
+			fmt.Printf("Trying resolution %s for %s\n", res, item.Name)
+			err = fetchResolutions(item.DynamicPart, res, filename)
+			if err == nil {
+				success = true
+				break
 			}
-			moduleName := strings.ReplaceAll(moduleName, "/", "_")
-			filename := fmt.Sprintf("./%s/%s", name, moduleName)
-			err = fetchResolutions(dynamicPart, "720p", filename)
-			if err != nil {
-				fmt.Println("720p not found, trying 716p")
-				err = fetchResolutions(dynamicPart, "716p", filename)
-				if err != nil {
-					return err
-				}
-			}
+			fmt.Printf("%s not available, trying next resolution\n", res)
+		}
 
-			// Toggle the 'downloaded' field to true
-			item["downloaded"] = true
+		if !success {
+			fmt.Printf("Failed to download %s after trying all resolutions\nSkipping to next video...\n\n", item.Name)
+			failedDownloads = append(failedDownloads, item.Name)
+			continue
+		}
 
-			// Update the JSON file
-			fileContent, err := json.MarshalIndent(jsonData, "", "  ")
-			if err != nil {
-				return err
-			}
-			err = ioutil.WriteFile(jsonFile, fileContent, 0644)
-			if err != nil {
-				return err
+		item.Downloaded = true
+
+		updatedContent, err := json.MarshalIndent(courseData, "", "  ")
+		if err != nil {
+			fmt.Printf("Warning: Could not update progress for %s: %v\n", item.Name, err)
+		} else {
+			if err := ioutil.WriteFile(jsonFile, updatedContent, 0644); err != nil {
+				fmt.Printf("Warning: Could not save progress for %s: %v\n", item.Name, err)
 			}
 		}
 	}
 
+	if len(failedDownloads) > 0 {
+		fmt.Printf("\nThe following videos failed to download:\n")
+		for _, name := range failedDownloads {
+			fmt.Printf("- %s\n", name)
+		}
+		fmt.Println("\nYou can try downloading these videos again later.")
+		return fmt.Errorf("some videos failed to download")
+	}
+
 	return nil
+}
+
+func getAvailableResolutions(id string) ([]string, error) {
+	url := "http://fast.wistia.net/embed/iframe/" + id
+	response, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var content []map[string]interface{}
+	re := regexp.MustCompile(`"assets":(\[.*?\])`)
+	match := re.FindStringSubmatch(string(body))
+
+	if len(match) > 1 {
+		if err := json.Unmarshal([]byte(match[1]), &content); err != nil {
+			return nil, err
+		}
+
+		resolutions := make([]string, 0)
+		for _, asset := range content {
+			if height, ok := asset["height"].(float64); ok {
+				resolutions = append(resolutions, fmt.Sprintf("%dp", int(height)))
+			}
+		}
+
+		sort.Slice(resolutions, func(i, j int) bool {
+			iRes, _ := strconv.Atoi(strings.TrimSuffix(resolutions[i], "p"))
+			jRes, _ := strconv.Atoi(strings.TrimSuffix(resolutions[j], "p"))
+			return iRes > jRes
+		})
+
+		return resolutions, nil
+	}
+
+	return nil, fmt.Errorf("no resolution data found")
 }
 
 func parseResolution(metadata, resolution, filename string) error {
@@ -122,26 +201,47 @@ func parseResolution(metadata, resolution, filename string) error {
 		"480p":  480,
 		"360p":  360,
 		"716p":  716,
+		"220p":  220,
 	}
 
 	selectedResolution := resolutionMapping[resolution]
 	var videoURL string
 
 	for _, v := range res {
-		if int(v["height"].(float64)) == selectedResolution {
-			videoURL = v["url"].(string)
+		heightVal, ok := v["height"]
+		if !ok || heightVal == nil {
+			continue
+		}
+
+		height, ok := heightVal.(float64)
+		if !ok {
+			continue
+		}
+
+		if int(height) == selectedResolution {
+			urlVal, ok := v["url"]
+			if !ok || urlVal == nil {
+				continue
+			}
+
+			videoURL, ok = urlVal.(string)
+			if !ok || videoURL == "" {
+				continue
+			}
 			break
 		}
 	}
 
-	return downloadVideo(videoURL, filename+".mp4")
+	if videoURL == "" {
+		return fmt.Errorf("resolution %s not found or invalid video data", resolution)
+	}
+
+	return downloadVideo(videoURL, filename)
 }
 
 func fetchResolutions(id, resolution, filename string) error {
-	fmt.Println("Connecting...")
-	fmt.Println("id: " + id)
+	fmt.Printf("Fetching video ID: %s\n", id)
 	url := "http://fast.wistia.net/embed/iframe/" + id
-	fmt.Println("URL:", url)
 	response, err := http.Get(url)
 	if err != nil {
 		return err
@@ -188,6 +288,67 @@ func fetchResolutions(id, resolution, filename string) error {
 	return nil
 }
 
+func verifyDownloads() error {
+	jsonFiles, err := filepath.Glob("./jsons/*.json")
+	if err != nil {
+		return fmt.Errorf("error finding JSON files: %v", err)
+	}
+
+	var missingFiles []string
+	totalVideos := 0
+	downloadedVideos := 0
+
+	for _, jsonFile := range jsonFiles {
+		fileContent, err := ioutil.ReadFile(jsonFile)
+		if err != nil {
+			fmt.Printf("Warning: Could not read %s: %v\n", jsonFile, err)
+			continue
+		}
+
+		var courseData CourseData
+		if err := json.Unmarshal(fileContent, &courseData); err != nil {
+			fmt.Printf("Warning: Could not parse %s: %v\n", jsonFile, err)
+			continue
+		}
+
+		for _, item := range courseData.Items {
+			if item.Type != "video" {
+				continue
+			}
+
+			totalVideos++
+			cleanName := strings.ReplaceAll(item.Name, "/", "_")
+			expectedPath := filepath.Join(".", courseData.Name, cleanName+".mp4")
+
+			if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
+				if item.Downloaded {
+					missingFiles = append(missingFiles, fmt.Sprintf("%s (marked as downloaded but file missing)", expectedPath))
+				} else {
+					missingFiles = append(missingFiles, expectedPath)
+				}
+			} else {
+				downloadedVideos++
+			}
+		}
+	}
+
+	fmt.Printf("\nDownload Status:\n")
+	fmt.Printf("Total videos: %d\n", totalVideos)
+	fmt.Printf("Downloaded: %d\n", downloadedVideos)
+	fmt.Printf("Missing: %d\n", len(missingFiles))
+
+	if len(missingFiles) > 0 {
+		fmt.Printf("\nMissing files:\n")
+		for _, file := range missingFiles {
+			fmt.Printf("- %s\n", file)
+		}
+		return fmt.Errorf("some files are missing")
+	}
+
+	fmt.Printf("\nAll files are downloaded successfully!\n")
+	return nil
+}
+
 func main() {
 	app := cli.NewApp()
 	app.Name = "wisty-go"
@@ -196,7 +357,7 @@ func main() {
 
 	var resolution, name string
 	var id cli.StringSlice
-	var useJSONs bool
+	var useJSONs, verify bool
 
 	app.Flags = []cli.Flag{
 		cli.StringSliceFlag{
@@ -221,9 +382,17 @@ func main() {
 			Usage:       "Download videos based on JSON files in ./jsons folder",
 			Destination: &useJSONs,
 		},
+		cli.BoolFlag{
+			Name:        "verify",
+			Usage:       "Verify if all videos from JSON files are downloaded",
+			Destination: &verify,
+		},
 	}
 
 	app.Action = func(c *cli.Context) error {
+		if verify {
+			return verifyDownloads()
+		}
 
 		if useJSONs {
 			jsonFiles, err := filepath.Glob("./jsons/*.json")
@@ -231,17 +400,26 @@ func main() {
 				return err
 			}
 
-			for _, jsonFile := range jsonFiles {
+			var failedFiles []string
+			
+			for i, jsonFile := range jsonFiles {
+				fmt.Printf("\nProcessing file %d/%d: %s\n", i+1, len(jsonFiles), jsonFile)
 				err := downloadFromJSON(jsonFile)
 				if err != nil {
-					return err
+					fmt.Printf("Error processing %s: %v\nContinuing with next file...\n", jsonFile, err)
+					failedFiles = append(failedFiles, jsonFile)
+					continue
 				}
 			}
-		} else {
-			if len(id) == 0 {
-				return cli.NewExitError("Missing required argument 'id'. Run 'wisty-go --help' for help.", 1)
-			}
 
+			if len(failedFiles) > 0 {
+				fmt.Printf("\nThe following files had errors:\n")
+				for _, file := range failedFiles {
+					fmt.Printf("- %s\n", file)
+				}
+				return fmt.Errorf("some files had errors during processing")
+			}
+		} else if len(id) > 0 {
 			idSlice := strings.Split(id.String(), ",")
 
 			for i, videoID := range idSlice {
@@ -256,6 +434,8 @@ func main() {
 					return err
 				}
 			}
+		} else {
+			return cli.NewExitError("Either --jsons flag or --id flag is required", 1)
 		}
 
 		return nil
